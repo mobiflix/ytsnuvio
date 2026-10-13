@@ -20,7 +20,10 @@ const TRACKERS = [
 const TARGET_QUALITY = '1080p';
 const QUALITY_RANK = 3;
 const QUALITY_LABEL = '1080p';
-// =====================================================
+
+// ============ MINIMUM SEEDERS ============
+const MIN_SEEDS = 15;
+// =======================================
 
 // ============ HELPERS ============
 function resolveSettings(userSettings) {
@@ -113,11 +116,14 @@ async function fetchEztv(imdbId, title, season, episode, settings) {
       if (String(t.season) !== String(season) || String(t.episode) !== String(episode)) continue;
       if (!is1080p(t.filename)) continue;  // STRICT 1080p
 
+      const seeds = parseInt(t.seeds) || 0;
+      if (seeds < MIN_SEEDS) continue;  // MINIMUM 15 SEEDS
+
       out.push({
         source: 'EZTV',
         hash: t.hash,
         filename: t.filename,
-        seeds: parseInt(t.seeds) || 0,
+        seeds: seeds,
         peers: parseInt(t.peers) || 0,
         sizeBytes: parseInt(t.size_bytes) || 0,
         qualityRank: QUALITY_RANK,
@@ -163,6 +169,9 @@ async function fetch1337x(title, season, episode, settings) {
       if (!matchesSe(t.name, season, episode)) continue;
       if (!is1080p(t.name)) continue;  // STRICT 1080p
 
+      const seeds = parseInt(t.seeders) || 0;
+      if (seeds < MIN_SEEDS) continue;  // MINIMUM 15 SEEDS
+
       const nameNorm = normalizeTitle(t.name);
       const matched = tWords.filter(w => nameNorm.includes(w));
       if (matched.length < Math.max(1, Math.floor(tWords.length * 0.5))) continue;
@@ -171,7 +180,7 @@ async function fetch1337x(title, season, episode, settings) {
         source: '1337x',
         hash: t.info_hash,
         filename: t.name,
-        seeds: parseInt(t.seeders) || 0,
+        seeds: seeds,
         peers: parseInt(t.leechers) || 0,
         sizeBytes: parseInt(t.size) || 0,
         qualityRank: QUALITY_RANK,
@@ -290,7 +299,7 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 function onSettings() {
   return (async function () {
     return [
-      { type: 'header', label: 'EZTV + 1337x — 1080p Only' },
+      { type: 'header', label: 'EZTV + 1337x — 1080p Only + 15+ Seeds' },
       {
         type: 'select',
         key: 'sortBy',
