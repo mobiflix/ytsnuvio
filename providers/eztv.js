@@ -16,16 +16,15 @@ const TRACKERS = [
   'udp://exodus.desync.com:6969/announce'
 ];
 
+// ============ TARGET QUALITY — 1080p ONLY ============
 const TARGET_QUALITY = '1080p';
-const FALLBACK_QUALITY = '720p';
 const QUALITY_RANK = 3;
-const FALLBACK_QUALITY_RANK = 2;
 const QUALITY_LABEL = '1080p';
-const FALLBACK_QUALITY_LABEL = '720p';
+// =====================================================
 
 // ============ HELPERS ============
 function resolveSettings(userSettings) {
-  let settings = { debridProvider: 'none', debridKey: '', language: 'any', minQuality: TARGET_QUALITY, sortBy: 'seeders', allowFallback: true };
+  let settings = { debridProvider: 'none', debridKey: '', language: 'any', minQuality: TARGET_QUALITY, sortBy: 'seeders' };
   try {
     let src = userSettings;
     if (!src && typeof globalThis !== 'undefined') src = globalThis.SCRAPER_SETTINGS || globalThis.SETTINGS || globalThis.settings;
@@ -37,7 +36,6 @@ function resolveSettings(userSettings) {
       if (src.language) settings.language = String(src.language).trim();
       if (src.minQuality) settings.minQuality = String(src.minQuality).trim();
       if (src.sortBy) settings.sortBy = String(src.sortBy).trim();
-      if (typeof src.allowFallback === 'boolean') settings.allowFallback = src.allowFallback;
     }
   } catch (e) { console.error('[' + DEFAULT_PROVIDER + '] settings error:', e); }
   return settings;
@@ -97,13 +95,9 @@ function matchesSe(name, season, episode) {
   return patterns.some(p => p.test(name));
 }
 
-// ============ QUALITY DETECTION ============
-function detectQuality(filename) {
-  if (/\b2160p\b|\b4K\b|\bUHD\b/i.test(filename)) return { rank: 4, label: '2160p' };
-  if (/\b1080p\b|\bFHD\b/i.test(filename)) return { rank: 3, label: '1080p' };
-  if (/\b720p\b|\bHD\b/i.test(filename)) return { rank: 2, label: '720p' };
-  if (/\b480p\b|\bSD\b/i.test(filename)) return { rank: 1, label: '480p' };
-  return { rank: 0, label: 'unknown' };
+// ============ STRICT 1080p FILTER ============
+function is1080p(filename) {
+  return /\b1080p\b|\bFHD\b/i.test(filename);
 }
 
 // ============ SOURCE 1: EZTV ============
@@ -117,10 +111,7 @@ async function fetchEztv(imdbId, title, season, episode, settings) {
     for (const t of data.torrents) {
       if (!t || !t.hash || !t.filename) continue;
       if (String(t.season) !== String(season) || String(t.episode) !== String(episode)) continue;
-
-      const q = detectQuality(t.filename);
-      if (q.rank < FALLBACK_QUALITY_RANK) continue;
-      if (q.rank < QUALITY_RANK && !settings.allowFallback) continue;
+      if (!is1080p(t.filename)) continue;  // STRICT 1080p
 
       out.push({
         source: 'EZTV',
@@ -129,8 +120,8 @@ async function fetchEztv(imdbId, title, season, episode, settings) {
         seeds: parseInt(t.seeds) || 0,
         peers: parseInt(t.peers) || 0,
         sizeBytes: parseInt(t.size_bytes) || 0,
-        qualityRank: q.rank,
-        qualityLabel: q.label,
+        qualityRank: QUALITY_RANK,
+        qualityLabel: QUALITY_LABEL,
         magnet: t.magnet_url || buildMagnet(t.hash, t.filename)
       });
     }
@@ -170,14 +161,11 @@ async function fetch1337x(title, season, episode, settings) {
 
     for (const t of all) {
       if (!matchesSe(t.name, season, episode)) continue;
+      if (!is1080p(t.name)) continue;  // STRICT 1080p
 
       const nameNorm = normalizeTitle(t.name);
       const matched = tWords.filter(w => nameNorm.includes(w));
       if (matched.length < Math.max(1, Math.floor(tWords.length * 0.5))) continue;
-
-      const q = detectQuality(t.name);
-      if (q.rank < FALLBACK_QUALITY_RANK) continue;
-      if (q.rank < QUALITY_RANK && !settings.allowFallback) continue;
 
       out.push({
         source: '1337x',
@@ -186,8 +174,8 @@ async function fetch1337x(title, season, episode, settings) {
         seeds: parseInt(t.seeders) || 0,
         peers: parseInt(t.leechers) || 0,
         sizeBytes: parseInt(t.size) || 0,
-        qualityRank: q.rank,
-        qualityLabel: q.label,
+        qualityRank: QUALITY_RANK,
+        qualityLabel: QUALITY_LABEL,
         magnet: buildMagnet(t.info_hash, t.name)
       });
     }
@@ -259,16 +247,16 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
         if (/\b5\.1\b/i.test(item.filename)) extras.push('5.1');
 
         const titleLine = '\uD83C\uDFA6 ' + title + ' S' + String(seasonNum).padStart(2, '0') + ' E' + String(episodeNum).padStart(2, '0');
-        const qualityLine = '\uD83D\uDD25 ' + item.qualityLabel + (extras.length ? ' | ' + extras.join(' | ') : '');
+        const qualityLine = '\uD83D\uDD25 ' + QUALITY_LABEL + (extras.length ? ' | ' + extras.join(' | ') : '');
         const statsLine = '\uD83C\uDF31 ' + item.seeds + ' | \uD83D\uDCBE ' + sizeGB + ' GB | \uD83D\uDD17 ' + item.source;
         const description = titleLine + '\n' + qualityLine + '\n' + statsLine;
 
         return {
           seeders: item.seeds,
           sizeBytes: item.sizeBytes,
-          qualityRank: item.qualityRank,
+          qualityRank: QUALITY_RANK,
           data: {
-            name: item.source + ' | ' + item.qualityLabel.toUpperCase() + ' | \uD83C\uDF31 ' + item.seeds,
+            name: item.source + ' | ' + QUALITY_LABEL.toUpperCase() + ' | \uD83C\uDF31 ' + item.seeds,
             title: description,
             size: description,
             description,
@@ -281,9 +269,7 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
       results.sort((a, b) => {
         // Primary: Seeders (mas mataas, mas mauna)
         if (b.seeders !== a.seeders) return b.seeders - a.seeders;
-        // Secondary: Quality rank (tiebreaker)
-        if (b.qualityRank !== a.qualityRank) return b.qualityRank - a.qualityRank;
-        // Tertiary: Size (mas maliit, mas mauna)
+        // Secondary: Size (mas maliit, mas mauna)
         return a.sizeBytes - b.sizeBytes;
       });
 
@@ -304,27 +290,16 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 function onSettings() {
   return (async function () {
     return [
-      { type: 'header', label: 'EZTV + 1337x — Seeders Priority' },
+      { type: 'header', label: 'EZTV + 1337x — 1080p Only' },
       {
         type: 'select',
         key: 'sortBy',
         label: 'Sort results by',
         options: [
           { label: 'Seeders (recommended)', value: 'seeders' },
-          { label: 'Quality', value: 'quality' },
           { label: 'Size', value: 'size' }
         ],
         default: 'seeders'
-      },
-      {
-        type: 'select',
-        key: 'allowFallback',
-        label: 'Allow 720p fallback',
-        options: [
-          { label: 'Yes — kung walang 1080p', value: 'true' },
-          { label: 'No — 1080p only', value: 'false' }
-        ],
-        default: 'true'
       }
     ];
   })();
