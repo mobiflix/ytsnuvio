@@ -3,9 +3,7 @@
 // ============ CONFIG ============
 const TMDB_API_KEY = '1865f43a0549ca50d341dd9ab8b29f49';
 const PIRATEBAY_API = 'https://apibay.org';
-const DEFAULT_PROVIDER = 'ThePirateBay';
-
-const KNOWN_PROVIDERS = ['YTS','EZTV','RARBG','Torrentio','Bitmagnet','Prowlarr','1337x','ThePirateBay','KickassTorrents','Torlock','Zooqle','Torrentz2','BitSearch','LimeTorrents'];
+const DEFAULT_PROVIDER = 'ThePirateBay-TV';
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
@@ -19,9 +17,8 @@ const TRACKERS = [
   'udp://exodus.desync.com:6969/announce'
 ];
 
-// TPB category IDs
-const TPB_CATEGORY_MOVIES = 207;  // HD Movies
-const TPB_CATEGORY_TV = 205;      // TV Shows
+// TPB category for TV Shows
+const TPB_CATEGORY_TV = 205;
 
 // ============ TARGET QUALITY ============
 const TARGET_QUALITY = '1080p';
@@ -63,28 +60,6 @@ function buildMagnet(hash, name) {
   return 'magnet:?xt=urn:btih:' + hash + dn + trackers;
 }
 
-function parseSizeBytes(sizeStr, torrent) {
-  if (typeof torrent?.size === 'number' && torrent.size > 0) return Math.floor(torrent.size);
-  const m = String(sizeStr).match(/([0-9.]+)\s*([KMGT]?B)/i);
-  if (!m) return 0;
-  const val = parseFloat(m[1]);
-  const unit = m[2].toUpperCase();
-  if (unit === 'TB') return Math.floor(val * 1099511627776);
-  if (unit === 'GB') return Math.floor(val * 1073741824);
-  if (unit === 'MB') return Math.floor(val * 1048576);
-  if (unit === 'KB') return Math.floor(val * 1024);
-  return 0;
-}
-
-function getQualityRank(str) {
-  const s = String(str).toUpperCase();
-  if (s.includes('2160') || s.includes('4K') || s.includes('UHD')) return 4;
-  if (s.includes('1080') || s.includes('FHD')) return 3;
-  if (s.includes('720') || s.includes('HD')) return 2;
-  if (s.includes('480') || s.includes('SD')) return 1;
-  return 0;
-}
-
 function getInvertedSortTag(num, max) {
   max = max || 999999;
   const n = Math.max(0, parseInt(num, 10) || 0);
@@ -93,14 +68,18 @@ function getInvertedSortTag(num, max) {
   return bin.split('').map(b => b === '1' ? '\uFEFF' : '\u200B').join('');
 }
 
-// I-parse ang TPB response (flat array) at i-filter para sa target quality
-function parseTpbResults(torrents, title, year, season, episode, isSeries) {
+// I-parse ang TPB response at i-filter para sa TV series (season + episode + 1080p)
+function parseTpbTvResults(torrents, title, season, episode) {
   const results = [];
   const titleLower = title.toLowerCase();
   const titleWords = titleLower.split(/\s+/).filter(w => w.length > 2);
-  const yearStr = String(year);
-  const seasonStr = season ? String(season).padStart(2, '0') : null;
-  const episodeStr = episode ? String(episode).padStart(2, '0') : null;
+  const seasonStr = String(season).padStart(2, '0');
+  const episodeStr = String(episode).padStart(2, '0');
+
+  // Patterns para sa S01E01, 1x01, Season 1 Episode 1
+  const sePattern = new RegExp('S' + seasonStr + '[ ._-]?E' + episodeStr, 'i');
+  const xPattern = new RegExp('\\b' + parseInt(season) + 'x' + episodeStr + '\\b', 'i');
+  const wordPattern = new RegExp('Season[ ._-]?' + parseInt(season) + '[ ._-]?Episode[ ._-]?' + parseInt(episode), 'i');
 
   for (const t of torrents) {
     if (!t || !t.name || !t.info_hash || t.info_hash === '0000000000000000000000000000000000000000') continue;
@@ -109,29 +88,18 @@ function parseTpbResults(torrents, title, year, season, episode, isSeries) {
     const nameUpper = name.toUpperCase();
     const nameLower = name.toLowerCase();
 
-    // Quality filter — dapat 1080p
+    // 1080p filter (strict)
     if (!/\b1080p\b/i.test(name)) continue;
 
     // Title match — dapat may kahit ilang salita mula sa title
     const matchedWords = titleWords.filter(w => nameLower.includes(w));
     if (matchedWords.length < Math.max(1, Math.floor(titleWords.length * 0.6))) continue;
 
-    // Year match (kung may year sa name)
-    const yearInName = name.match(/\b(19|20)\d{2}\b/);
-    if (yearInName && yearInName[0] !== yearStr) {
-      // Payagan ang +/- 1 year (release year discrepancies)
-      const diff = Math.abs(parseInt(yearInName[0]) - parseInt(yearStr));
-      if (diff > 1) continue;
-    }
+    // Season + Episode match (required para sa TV)
+    const hasSE = sePattern.test(name) || xPattern.test(name) || wordPattern.test(name);
+    if (!hasSE) continue;
 
-    // Season/Episode filter para sa series
-    if (isSeries && seasonStr && episodeStr) {
-      const sePattern = new RegExp('S' + seasonStr + '[ ._-]?E' + episodeStr, 'i');
-      const altPattern = new RegExp(seasonStr + 'x' + episodeStr, 'i');
-      if (!sePattern.test(name) && !altPattern.test(name)) continue;
-    }
-
-    // I-exclude ang obvious fake/cam
+    // Exclude obvious fakes
     if (/\b(CAM|TS|HDTS|TC|R5|DVDSCR)\b/i.test(nameUpper)) continue;
 
     const seeds = parseInt(t.seeders) || 0;
@@ -140,7 +108,7 @@ function parseTpbResults(torrents, title, year, season, episode, isSeries) {
     const sizeGB = (sizeBytes / 1073741824).toFixed(2);
     const magnet = buildMagnet(t.info_hash, name);
 
-    // Codec/audio detection mula sa filename
+    // Codec/audio detection
     const extras = [];
     if (/\bX265\b|\bH\.?265\b|\bHEVC\b/i.test(name)) extras.push('X265');
     else if (/\bX264\b|\bH\.?264\b|\bAVC\b/i.test(name)) extras.push('X264');
@@ -152,11 +120,7 @@ function parseTpbResults(torrents, title, year, season, episode, isSeries) {
     if (/\b5\.1\b/i.test(name)) extras.push('5.1');
     if (/\b7\.1\b/i.test(name)) extras.push('7.1');
 
-    const uploader = t.username || 'anonymous';
-
-    const titleLine = isSeries
-      ? '\uD83C\uDFA6 ' + title + ' S' + (season || 1) + ' E' + (episode || 1)
-      : '\uD83C\uDFAC ' + title + ' - ' + year;
+    const titleLine = '\uD83C\uDFA6 ' + title + ' S' + seasonStr + ' E' + episodeStr;
     const qualityLine = '\uD83D\uDD25 ' + QUALITY_LABEL + (extras.length ? ' | ' + extras.join(' | ') : '');
     const statsLine = '\uD83C\uDF31 ' + seeds + ' | \uD83D\uDCBE ' + sizeGB + ' GB | \uD83D\uDD17 TPB';
     const description = titleLine + '\n' + qualityLine + '\n' + statsLine;
@@ -166,7 +130,6 @@ function parseTpbResults(torrents, title, year, season, episode, isSeries) {
       leechers,
       sizeBytes,
       qualityRank: QUALITY_RANK,
-      uploader,
       data: {
         name: 'TPB | ' + QUALITY_LABEL.toUpperCase() + ' | \uD83C\uDF31 ' + seeds,
         title: description,
@@ -183,40 +146,37 @@ function parseTpbResults(torrents, title, year, season, episode, isSeries) {
 // ============ MAIN: getStreams ============
 function getStreams(mediaId, mediaType = 'movie', season = null, episode = null, userSettings = null) {
   return (async function () {
+    // === TV SERIES ONLY ===
+    if (mediaType !== 'tv' && mediaType !== 'series') {
+      return [];
+    }
+
     const settings = resolveSettings(userSettings);
-    const isSeries = mediaType === 'tv' || mediaType === 'series';
+    const seasonNum = parseInt(season) || 1;
+    const episodeNum = parseInt(episode) || 1;
 
     try {
-      // 1. TMDB → title, year, IMDb ID
-      const tmdbUrl = 'https://api.themoviedb.org/3/' + (isSeries ? 'tv' : 'movie') + '/' + mediaId + '?api_key=' + TMDB_API_KEY + '&append_to_response=external_ids';
+      // 1. TMDB → title, year
+      const tmdbUrl = 'https://api.themoviedb.org/3/tv/' + mediaId + '?api_key=' + TMDB_API_KEY + '&append_to_response=external_ids';
       const tmdb = await fetch(tmdbUrl).then(r => r.json()).catch(() => null);
-      const title = tmdb?.title || tmdb?.name || 'Unknown';
-      const year = (tmdb?.release_date || tmdb?.first_air_date || 'N/A').split('-')[0];
-      const imdbId = tmdb?.external_ids?.imdb_id || tmdb?.imdb_id || '';
+      const title = tmdb?.name || tmdb?.original_name || 'Unknown';
+      const firstAirYear = (tmdb?.first_air_date || 'N/A').split('-')[0];
 
-      // 2. TPB search — subukan ang maraming query para sa mas magandang coverage
-      const queries = [];
-
-      if (isSeries) {
-        // Para sa series, subukan ang S01E01 format
-        const s = String(season || 1).padStart(2, '0');
-        const e = String(episode || 1).padStart(2, '0');
-        queries.push(title + ' S' + s + 'E' + e);
-        queries.push(title + ' ' + s + 'x' + e);
-        queries.push(title + ' Season ' + (season || 1));
-      } else {
-        queries.push(title + ' ' + year);
-        queries.push(title + ' ' + year + ' 1080p');
-        queries.push(title + ' 1080p');
-      }
+      // 2. TPB search — multiple queries for TV
+      const s = String(seasonNum).padStart(2, '0');
+      const e = String(episodeNum).padStart(2, '0');
+      const queries = [
+        title + ' S' + s + 'E' + e,
+        title + ' ' + seasonNum + 'x' + e,
+        title + ' Season ' + seasonNum
+      ];
 
       const allTorrents = [];
       const seenHashes = new Set();
 
       for (const q of queries) {
         try {
-          const cat = isSeries ? TPB_CATEGORY_TV : TPB_CATEGORY_MOVIES;
-          const url = PIRATEBAY_API + '/q.php?q=' + encodeURIComponent(q) + '&cat=' + cat;
+          const url = PIRATEBAY_API + '/q.php?q=' + encodeURIComponent(q) + '&cat=' + TPB_CATEGORY_TV;
           const arr = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch(() => null);
           if (Array.isArray(arr)) {
             for (const t of arr) {
@@ -232,12 +192,11 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
       if (!allTorrents.length) return [];
 
       // 3. Parse at filter
-      let results = parseTpbResults(allTorrents, title, year, season, episode, isSeries);
+      let results = parseTpbTvResults(allTorrents, title, seasonNum, episodeNum);
 
-      // 4. Fallback: kung walang 1080p results, huwag magbalik ng kahit ano (strict 1080p)
       if (!results.length) return [];
 
-      // 5. Sort
+      // 4. Sort
       results.sort((a, b) => {
         if (settings.sortBy === 'size') return b.sizeBytes - a.sizeBytes;
         if (settings.sortBy === 'quality') {
@@ -247,7 +206,7 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
         return b.seeders - a.seeders;
       });
 
-      // 6. Apply inverted sort tag para sa Stremio sorting
+      // 5. Apply inverted sort tag
       return results.map(r => {
         let sortTag;
         if (settings.sortBy === 'size') sortTag = getInvertedSortTag(Math.floor(r.sizeBytes / 1073741824));
@@ -270,7 +229,7 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 function onSettings() {
   return (async function () {
     return [
-      { type: 'header', label: 'The Pirate Bay Scraper' },
+      { type: 'header', label: 'The Pirate Bay — TV Series Only' },
       {
         type: 'select',
         key: 'debridProvider',
