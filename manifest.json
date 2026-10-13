@@ -18,13 +18,13 @@
       "supportsExternalPlayer": true 
     },
     {
-      "id": "thepiratebay_1080p",
-      "name": "The Pirate Bay 1080p",
+      "id": "EZTV_1080p",
+      "name": "EZTV 1080p",
       "description": "1080p torrent magnet links",
       "version": "1.0.0",
       "author": "Nuvio Team",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/thepiratebay_1080p.js",
+      "filename": "providers/EZTV_1080p.js",
       "enabled": true,
       "hasSettings": true,
       "logo": "https://em-content.zobj.net/source/apple/391/eagle_1f985.png",
