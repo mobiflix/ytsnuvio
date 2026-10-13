@@ -141,65 +141,7 @@ async function fetchEztv(imdbId, title, season, episode, settings) {
   }
 }
 
-// ============ SOURCE 2: The Pirate Bay ============
-async function fetchTpb(title, season, episode, settings) {
-  try {
-    const queries = [
-      title + ' S' + String(season).padStart(2, '0') + 'E' + String(episode).padStart(2, '0'),
-      title + ' ' + season + 'x' + String(episode).padStart(2, '0'),
-      title + ' Season ' + season
-    ];
-    const seen = new Set();
-    const all = [];
-    for (const q of queries) {
-      try {
-        const url = 'https://apibay.org/q.php?q=' + encodeURIComponent(q) + '&cat=205';
-        const arr = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch(() => null);
-        if (Array.isArray(arr)) {
-          for (const t of arr) {
-            if (t && t.info_hash && !seen.has(t.info_hash) && t.info_hash !== '0000000000000000000000000000000000000000') {
-              seen.add(t.info_hash);
-              all.push(t);
-            }
-          }
-        }
-      } catch (_) {}
-    }
-
-    const out = [];
-    const tWords = titleWords(title);
-
-    for (const t of all) {
-      if (!matchesSe(t.name, season, episode)) continue;
-
-      const nameNorm = normalizeTitle(t.name);
-      const matched = tWords.filter(w => nameNorm.includes(w));
-      if (matched.length < Math.max(1, Math.floor(tWords.length * 0.5))) continue;
-
-      const q = detectQuality(t.name);
-      if (q.rank < FALLBACK_QUALITY_RANK) continue;
-      if (q.rank < QUALITY_RANK && !settings.allowFallback) continue;
-
-      out.push({
-        source: 'TPB',
-        hash: t.info_hash,
-        filename: t.name,
-        seeds: parseInt(t.seeders) || 0,
-        peers: parseInt(t.leechers) || 0,
-        sizeBytes: parseInt(t.size) || 0,
-        qualityRank: q.rank,
-        qualityLabel: q.label,
-        magnet: buildMagnet(t.info_hash, t.name)
-      });
-    }
-    return out;
-  } catch (e) {
-    console.error('[TPB] error:', e?.message || e);
-    return [];
-  }
-}
-
-// ============ SOURCE 3: 1337x (via apibay alt queries) ============
+// ============ SOURCE 2: 1337x (via apibay alt queries) ============
 async function fetch1337x(title, season, episode, settings) {
   try {
     const queries = [
@@ -256,63 +198,6 @@ async function fetch1337x(title, season, episode, settings) {
   }
 }
 
-// ============ SOURCE 4: BitSearch (via apibay alt queries) ============
-async function fetchBitSearch(title, season, episode, settings) {
-  try {
-    const queries = [
-      title + ' S' + String(season).padStart(2, '0') + 'E' + String(episode).padStart(2, '0') + ' HEVC',
-      title + ' S' + String(season).padStart(2, '0') + 'E' + String(episode).padStart(2, '0') + ' WEB'
-    ];
-    const seen = new Set();
-    const all = [];
-    for (const q of queries) {
-      try {
-        const url = 'https://apibay.org/q.php?q=' + encodeURIComponent(q) + '&cat=0';
-        const arr = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch(() => null);
-        if (Array.isArray(arr)) {
-          for (const t of arr) {
-            if (t && t.info_hash && !seen.has(t.info_hash) && t.info_hash !== '0000000000000000000000000000000000000000') {
-              seen.add(t.info_hash);
-              all.push(t);
-            }
-          }
-        }
-      } catch (_) {}
-    }
-
-    const out = [];
-    const tWords = titleWords(title);
-
-    for (const t of all) {
-      if (!matchesSe(t.name, season, episode)) continue;
-
-      const nameNorm = normalizeTitle(t.name);
-      const matched = tWords.filter(w => nameNorm.includes(w));
-      if (matched.length < Math.max(1, Math.floor(tWords.length * 0.5))) continue;
-
-      const q = detectQuality(t.name);
-      if (q.rank < FALLBACK_QUALITY_RANK) continue;
-      if (q.rank < QUALITY_RANK && !settings.allowFallback) continue;
-
-      out.push({
-        source: 'BitSearch',
-        hash: t.info_hash,
-        filename: t.name,
-        seeds: parseInt(t.seeders) || 0,
-        peers: parseInt(t.leechers) || 0,
-        sizeBytes: parseInt(t.size) || 0,
-        qualityRank: q.rank,
-        qualityLabel: q.label,
-        magnet: buildMagnet(t.info_hash, t.name)
-      });
-    }
-    return out;
-  } catch (e) {
-    console.error('[BitSearch] error:', e?.message || e);
-    return [];
-  }
-}
-
 // ============ MAIN: getStreams ============
 function getStreams(mediaId, mediaType = 'movie', season = null, episode = null, userSettings = null) {
   return (async function () {
@@ -332,16 +217,14 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 
       if (title === 'Unknown' && !imdbId) return [];
 
-      // 2. Kunin mula sa LAHAT ng sources — sabay-sabay
+      // 2. Kunin mula sa DALAWANG sources — sabay-sabay
       const promises = [];
 
       if (imdbId) {
         promises.push(fetchEztv(imdbId, title, seasonNum, episodeNum, settings));
       }
       if (title && title !== 'Unknown') {
-        promises.push(fetchTpb(title, seasonNum, episodeNum, settings));
         promises.push(fetch1337x(title, seasonNum, episodeNum, settings));
-        promises.push(fetchBitSearch(title, seasonNum, episodeNum, settings));
       }
 
       const settled = await Promise.allSettled(promises);
@@ -400,13 +283,12 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
         if (b.seeders !== a.seeders) return b.seeders - a.seeders;
         // Secondary: Quality rank (tiebreaker)
         if (b.qualityRank !== a.qualityRank) return b.qualityRank - a.qualityRank;
-        // Tertiary: Size (mas maliit, mas mauna — para sa mas mabilis na download)
+        // Tertiary: Size (mas maliit, mas mauna)
         return a.sizeBytes - b.sizeBytes;
       });
 
       // 6. Apply inverted sort tag — seeders priority
       return results.map(r => {
-        // Seeders priority: mas mataas na seeders = mas maliit na inverted value = mas mauna
         const sortTag = getInvertedSortTag(r.seeders);
         return { ...r.data, name: sortTag + r.data.name };
       });
@@ -422,7 +304,7 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 function onSettings() {
   return (async function () {
     return [
-      { type: 'header', label: 'Multi-Source TV — Seeders Priority' },
+      { type: 'header', label: 'EZTV + 1337x — Seeders Priority' },
       {
         type: 'select',
         key: 'sortBy',
