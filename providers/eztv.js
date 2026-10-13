@@ -17,12 +17,15 @@ const TRACKERS = [
 ];
 
 const TARGET_QUALITY = '1080p';
+const FALLBACK_QUALITY = '720p';
 const QUALITY_RANK = 3;
+const FALLBACK_QUALITY_RANK = 2;
 const QUALITY_LABEL = '1080p';
+const FALLBACK_QUALITY_LABEL = '720p';
 
 // ============ HELPERS ============
 function resolveSettings(userSettings) {
-  let settings = { debridProvider: 'none', debridKey: '', language: 'any', minQuality: TARGET_QUALITY, sortBy: 'seeders' };
+  let settings = { debridProvider: 'none', debridKey: '', language: 'any', minQuality: TARGET_QUALITY, sortBy: 'seeders', allowFallback: true };
   try {
     let src = userSettings;
     if (!src && typeof globalThis !== 'undefined') src = globalThis.SCRAPER_SETTINGS || globalThis.SETTINGS || globalThis.settings;
@@ -34,6 +37,7 @@ function resolveSettings(userSettings) {
       if (src.language) settings.language = String(src.language).trim();
       if (src.minQuality) settings.minQuality = String(src.minQuality).trim();
       if (src.sortBy) settings.sortBy = String(src.sortBy).trim();
+      if (typeof src.allowFallback === 'boolean') settings.allowFallback = src.allowFallback;
     }
   } catch (e) { console.error('[' + DEFAULT_PROVIDER + '] settings error:', e); }
   return settings;
@@ -59,27 +63,81 @@ function normalizeImdbId(imdbId) {
   return String(imdbId).replace(/^tt/i, '').replace(/\D/g, '');
 }
 
+// ============ TITLE NORMALIZATION ============
+function normalizeTitle(title) {
+  if (!title) return '';
+  return String(title)
+    .replace(/[^\w\s]/g, ' ')    // alisin ang special characters
+    .replace(/\s+/g, ' ')         // i-collapse ang spaces
+    .trim()
+    .toLowerCase();
+}
+
+function titleWords(title) {
+  return normalizeTitle(title).split(/\s+/).filter(w => w.length > 2);
+}
+
+// ============ FLEXIBLE S/E PATTERNS ============
+function buildSePatterns(season, episode) {
+  const s = String(season);
+  const e = String(episode);
+  const sPad = s.padStart(2, '0');
+  const ePad = e.padStart(2, '0');
+  return [
+    new RegExp('S' + sPad + '[\\s._-]?E' + ePad, 'i'),      // S01E01, S01.E01, S01-E01, S01 E01
+    new RegExp('\\b' + s + 'x' + ePad + '\\b', 'i'),         // 1x01
+    new RegExp('Season[\\s._-]?' + s + '[\\s._-]?Episode[\\s._-]?' + e, 'i'), // Season 1 Episode 1
+    new RegExp('S' + sPad + '[\\s._-]?' + ePad, 'i'),       // S01.01, S01-01
+    new RegExp('\\b' + sPad + ePad + '\\b', 'i')             // 0101
+  ];
+}
+
+function matchesSe(name, season, episode) {
+  const patterns = buildSePatterns(season, episode);
+  return patterns.some(p => p.test(name));
+}
+
+// ============ QUALITY DETECTION ============
+function detectQuality(filename) {
+  if (/\b2160p\b|\b4K\b|\bUHD\b/i.test(filename)) return { rank: 4, label: '2160p' };
+  if (/\b1080p\b|\bFHD\b/i.test(filename)) return { rank: 3, label: '1080p' };
+  if (/\b720p\b|\bHD\b/i.test(filename)) return { rank: 2, label: '720p' };
+  if (/\b480p\b|\bSD\b/i.test(filename)) return { rank: 1, label: '480p' };
+  return { rank: 0, label: 'unknown' };
+}
+
 // ============ SOURCE 1: EZTV ============
-async function fetchEztv(imdbId, season, episode) {
+async function fetchEztv(imdbId, title, season, episode, settings) {
   try {
     const url = 'https://eztvx.to/api/get-torrents?imdb_id=' + imdbId + '&limit=100';
     const data = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch(() => null);
     if (!data?.torrents || !Array.isArray(data.torrents)) return [];
-    const seasonStr = String(season);
-    const episodeStr = String(episode);
-    return data.torrents
-      .filter(t => t && t.hash && t.filename)
-      .filter(t => /\b1080p\b/i.test(t.filename))
-      .filter(t => String(t.season) === seasonStr && String(t.episode) === episodeStr)
-      .map(t => ({
+
+    const out = [];
+    for (const t of data.torrents) {
+      if (!t || !t.hash || !t.filename) continue;
+      if (String(t.season) !== String(season) || String(t.episode) !== String(episode)) continue;
+
+      const q = detectQuality(t.filename);
+      // Quality filter: 1080p priority, 720p fallback
+      if (q.rank < FALLBACK_QUALITY_RANK) continue;
+
+      // Kung fallback lang, tanggapin lang kung may allowFallback
+      if (q.rank < QUALITY_RANK && !settings.allowFallback) continue;
+
+      out.push({
         source: 'EZTV',
         hash: t.hash,
         filename: t.filename,
         seeds: parseInt(t.seeds) || 0,
         peers: parseInt(t.peers) || 0,
         sizeBytes: parseInt(t.size_bytes) || 0,
+        qualityRank: q.rank,
+        qualityLabel: q.label,
         magnet: t.magnet_url || buildMagnet(t.hash, t.filename)
-      }));
+      });
+    }
+    return out;
   } catch (e) {
     console.error('[EZTV] error:', e?.message || e);
     return [];
@@ -87,13 +145,11 @@ async function fetchEztv(imdbId, season, episode) {
 }
 
 // ============ SOURCE 2: The Pirate Bay ============
-async function fetchTpb(title, season, episode) {
+async function fetchTpb(title, season, episode, settings) {
   try {
-    const s = String(season).padStart(2, '0');
-    const e = String(episode).padStart(2, '0');
     const queries = [
-      title + ' S' + s + 'E' + e,
-      title + ' ' + season + 'x' + e,
+      title + ' S' + String(season).padStart(2, '0') + 'E' + String(episode).padStart(2, '0'),
+      title + ' ' + season + 'x' + String(episode).padStart(2, '0'),
       title + ' Season ' + season
     ];
     const seen = new Set();
@@ -112,31 +168,157 @@ async function fetchTpb(title, season, episode) {
         }
       } catch (_) {}
     }
-    const seasonStr = String(season);
-    const episodeStr = String(episode);
-    const sePattern = new RegExp('S' + String(season).padStart(2, '0') + '[ ._-]?E' + String(episode).padStart(2, '0'), 'i');
-    const xPattern = new RegExp('\\b' + season + 'x' + String(episode).padStart(2, '0') + '\\b', 'i');
 
-    return all
-      .filter(t => /\b1080p\b/i.test(t.name))
-      .filter(t => sePattern.test(t.name) || xPattern.test(t.name))
-      .map(t => ({
+    const out = [];
+    const normTitle = normalizeTitle(title);
+    const tWords = titleWords(title);
+
+    for (const t of all) {
+      if (!matchesSe(t.name, season, episode)) continue;
+
+      // Title match — dapat may 50% ng title words
+      const nameNorm = normalizeTitle(t.name);
+      const matched = tWords.filter(w => nameNorm.includes(w));
+      if (matched.length < Math.max(1, Math.floor(tWords.length * 0.5))) continue;
+
+      const q = detectQuality(t.name);
+      if (q.rank < FALLBACK_QUALITY_RANK) continue;
+      if (q.rank < QUALITY_RANK && !settings.allowFallback) continue;
+
+      out.push({
         source: 'TPB',
         hash: t.info_hash,
         filename: t.name,
         seeds: parseInt(t.seeders) || 0,
         peers: parseInt(t.leechers) || 0,
         sizeBytes: parseInt(t.size) || 0,
+        qualityRank: q.rank,
+        qualityLabel: q.label,
         magnet: buildMagnet(t.info_hash, t.name)
-      }));
+      });
+    }
+    return out;
   } catch (e) {
     console.error('[TPB] error:', e?.message || e);
     return [];
   }
 }
 
-// ============ SOURCE 3: 1337x (via apibay-style fallback) ============
-// (Optional — kailangan ng HTML scraping, hindi kasama sa test)
+// ============ SOURCE 3: 1337x (via apibay alt category) ============
+async function fetch1337x(title, season, episode, settings) {
+  try {
+    // 1337x ay walang public JSON API — gamitin ang generic TPB query na may mas malawak na category
+    const queries = [
+      title + ' S' + String(season).padStart(2, '0') + 'E' + String(episode).padStart(2, '0') + ' 1080p',
+      title + ' S' + String(season).padStart(2, '0') + 'E' + String(episode).padStart(2, '0') + ' x265'
+    ];
+    const seen = new Set();
+    const all = [];
+    for (const q of queries) {
+      try {
+        // cat=0 = all categories (mas malawak)
+        const url = 'https://apibay.org/q.php?q=' + encodeURIComponent(q) + '&cat=0';
+        const arr = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch(() => null);
+        if (Array.isArray(arr)) {
+          for (const t of arr) {
+            if (t && t.info_hash && !seen.has(t.info_hash) && t.info_hash !== '0000000000000000000000000000000000000000') {
+              seen.add(t.info_hash);
+              all.push(t);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    const out = [];
+    const tWords = titleWords(title);
+
+    for (const t of all) {
+      if (!matchesSe(t.name, season, episode)) continue;
+
+      const nameNorm = normalizeTitle(t.name);
+      const matched = tWords.filter(w => nameNorm.includes(w));
+      if (matched.length < Math.max(1, Math.floor(tWords.length * 0.5))) continue;
+
+      const q = detectQuality(t.name);
+      if (q.rank < FALLBACK_QUALITY_RANK) continue;
+      if (q.rank < QUALITY_RANK && !settings.allowFallback) continue;
+
+      out.push({
+        source: '1337x',
+        hash: t.info_hash,
+        filename: t.name,
+        seeds: parseInt(t.seeders) || 0,
+        peers: parseInt(t.leechers) || 0,
+        sizeBytes: parseInt(t.size) || 0,
+        qualityRank: q.rank,
+        qualityLabel: q.label,
+        magnet: buildMagnet(t.info_hash, t.name)
+      });
+    }
+    return out;
+  } catch (e) {
+    console.error('[1337x] error:', e?.message || e);
+    return [];
+  }
+}
+
+// ============ SOURCE 4: BitSearch (via apibay alt queries) ============
+async function fetchBitSearch(title, season, episode, settings) {
+  try {
+    const queries = [
+      title + ' S' + String(season).padStart(2, '0') + 'E' + String(episode).padStart(2, '0') + ' HEVC',
+      title + ' S' + String(season).padStart(2, '0') + 'E' + String(episode).padStart(2, '0') + ' WEB'
+    ];
+    const seen = new Set();
+    const all = [];
+    for (const q of queries) {
+      try {
+        const url = 'https://apibay.org/q.php?q=' + encodeURIComponent(q) + '&cat=0';
+        const arr = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch(() => null);
+        if (Array.isArray(arr)) {
+          for (const t of arr) {
+            if (t && t.info_hash && !seen.has(t.info_hash) && t.info_hash !== '0000000000000000000000000000000000000000') {
+              seen.add(t.info_hash);
+              all.push(t);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    const out = [];
+    const tWords = titleWords(title);
+
+    for (const t of all) {
+      if (!matchesSe(t.name, season, episode)) continue;
+
+      const nameNorm = normalizeTitle(t.name);
+      const matched = tWords.filter(w => nameNorm.includes(w));
+      if (matched.length < Math.max(1, Math.floor(tWords.length * 0.5))) continue;
+
+      const q = detectQuality(t.name);
+      if (q.rank < FALLBACK_QUALITY_RANK) continue;
+      if (q.rank < QUALITY_RANK && !settings.allowFallback) continue;
+
+      out.push({
+        source: 'BitSearch',
+        hash: t.info_hash,
+        filename: t.name,
+        seeds: parseInt(t.seeders) || 0,
+        peers: parseInt(t.leechers) || 0,
+        sizeBytes: parseInt(t.size) || 0,
+        qualityRank: q.rank,
+        qualityLabel: q.label,
+        magnet: buildMagnet(t.info_hash, t.name)
+      });
+    }
+    return out;
+  } catch (e) {
+    console.error('[BitSearch] error:', e?.message || e);
+    return [];
+  }
+}
 
 // ============ MAIN: getStreams ============
 function getStreams(mediaId, mediaType = 'movie', season = null, episode = null, userSettings = null) {
@@ -155,14 +337,18 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
       const title = tmdb?.name || tmdb?.original_name || 'Unknown';
       const imdbId = normalizeImdbId(rawImdbId);
 
+      if (title === 'Unknown' && !imdbId) return [];
+
       // 2. Kunin mula sa LAHAT ng sources — sabay-sabay
       const promises = [];
 
       if (imdbId) {
-        promises.push(fetchEztv(imdbId, seasonNum, episodeNum));
+        promises.push(fetchEztv(imdbId, title, seasonNum, episodeNum, settings));
       }
       if (title && title !== 'Unknown') {
-        promises.push(fetchTpb(title, seasonNum, episodeNum));
+        promises.push(fetchTpb(title, seasonNum, episodeNum, settings));
+        promises.push(fetch1337x(title, seasonNum, episodeNum, settings));
+        promises.push(fetchBitSearch(title, seasonNum, episodeNum, settings));
       }
 
       const settled = await Promise.allSettled(promises);
@@ -193,19 +379,20 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
         if (/\bHDR10\+?\b/i.test(item.filename)) extras.push('HDR10');
         else if (/\bHDR\b/i.test(item.filename)) extras.push('HDR');
         if (/\bATMOS\b/i.test(item.filename)) extras.push('ATMOS');
+        if (/\bDTS\b/i.test(item.filename)) extras.push('DTS');
         if (/\b5\.1\b/i.test(item.filename)) extras.push('5.1');
 
         const titleLine = '\uD83C\uDFA6 ' + title + ' S' + String(seasonNum).padStart(2, '0') + ' E' + String(episodeNum).padStart(2, '0');
-        const qualityLine = '\uD83D\uDD25 ' + QUALITY_LABEL + (extras.length ? ' | ' + extras.join(' | ') : '');
+        const qualityLine = '\uD83D\uDD25 ' + item.qualityLabel + (extras.length ? ' | ' + extras.join(' | ') : '');
         const statsLine = '\uD83C\uDF31 ' + item.seeds + ' | \uD83D\uDCBE ' + sizeGB + ' GB | \uD83D\uDD17 ' + item.source;
         const description = titleLine + '\n' + qualityLine + '\n' + statsLine;
 
         return {
           seeders: item.seeds,
           sizeBytes: item.sizeBytes,
-          qualityRank: QUALITY_RANK,
+          qualityRank: item.qualityRank,
           data: {
-            name: item.source + ' | ' + QUALITY_LABEL.toUpperCase() + ' | \uD83C\uDF31 ' + item.seeds,
+            name: item.source + ' | ' + item.qualityLabel.toUpperCase() + ' | \uD83C\uDF31 ' + item.seeds,
             title: description,
             size: description,
             description,
@@ -214,13 +401,15 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
         };
       });
 
-      // 5. Sort
+      // 5. Sort — 1080p muna, tapos seeders
       results.sort((a, b) => {
         if (settings.sortBy === 'size') return b.sizeBytes - a.sizeBytes;
         if (settings.sortBy === 'quality') {
           if (b.qualityRank !== a.qualityRank) return b.qualityRank - a.qualityRank;
           return b.seeders - a.seeders;
         }
+        // Default: quality rank muna, tapos seeders
+        if (b.qualityRank !== a.qualityRank) return b.qualityRank - a.qualityRank;
         return b.seeders - a.seeders;
       });
 
@@ -244,17 +433,27 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 function onSettings() {
   return (async function () {
     return [
-      { type: 'header', label: 'Multi-Source TV — EZTV + TPB' },
+      { type: 'header', label: 'Multi-Source TV — EZTV + TPB + 1337x + BitSearch' },
       {
         type: 'select',
         key: 'sortBy',
         label: 'Sort results by',
         options: [
+          { label: 'Quality + Seeders', value: 'quality' },
           { label: 'Seeders', value: 'seeders' },
-          { label: 'Quality', value: 'quality' },
           { label: 'Size', value: 'size' }
         ],
-        default: 'seeders'
+        default: 'quality'
+      },
+      {
+        type: 'select',
+        key: 'allowFallback',
+        label: 'Allow 720p fallback',
+        options: [
+          { label: 'Yes — kung walang 1080p', value: 'true' },
+          { label: 'No — 1080p only', value: 'false' }
+        ],
+        default: 'true'
       }
     ];
   })();
