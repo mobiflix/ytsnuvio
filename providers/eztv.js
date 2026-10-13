@@ -65,130 +65,88 @@ function getInvertedSortTag(num, max) {
   return bin.split('').map(b => b === '1' ? '\uFEFF' : '\u200B').join('');
 }
 
-// I-strip ang "tt" prefix at gawing raw digits (walang padding)
 function normalizeImdbId(imdbId) {
   if (!imdbId) return '';
   return String(imdbId).replace(/^tt/i, '').replace(/\D/g, '');
 }
 
-// ============ MAIN: getStreams ============
+// ============ MAIN: getStreams (TEST VERSION) ============
 function getStreams(mediaId, mediaType = 'movie', season = null, episode = null, userSettings = null) {
   return (async function () {
-    console.log('[EZTV-DEBUG] Start:', JSON.stringify({ mediaId, mediaType, season, episode }));
+    // === STEP 0: CHECK ENVIRONMENT ===
+    const fetchType = typeof fetch;
+    const hasXHR = typeof XMLHttpRequest !== 'undefined';
+    const hasRequire = typeof require !== 'undefined';
+    const envInfo = 'fetch=' + fetchType + ' | XHR=' + hasXHR + ' | require=' + hasRequire;
 
+    // Kung hindi TV, ibalik agad ang test result
     if (mediaType !== 'tv' && mediaType !== 'series') {
-      console.log('[EZTV-DEBUG] Not TV, returning empty');
-      return [];
+      return [{
+        name: 'TEST | Not TV',
+        title: 'mediaType=' + mediaType + '\n' + envInfo,
+        url: 'magnet:?xt=urn:btih:0000000000000000000000000000000000000000'
+      }];
     }
 
-    const settings = resolveSettings(userSettings);
-    const seasonNum = parseInt(season) || 1;
-    const episodeNum = parseInt(episode) || 1;
+    // === TEST 1: TMDB ===
+    let tmdbInfo = 'TMDB: not called';
+    let imdbId = '';
+    let title = 'Unknown';
 
     try {
-      // 1. TMDB → IMDb ID + title
       const tmdbUrl = 'https://api.themoviedb.org/3/tv/' + mediaId + '?api_key=' + TMDB_API_KEY + '&append_to_response=external_ids';
-      console.log('[EZTV-DEBUG] TMDB URL:', tmdbUrl);
-      const tmdb = await fetch(tmdbUrl).then(r => r.json()).catch((e) => { console.log('[EZTV-DEBUG] TMDB fetch error:', e); return null; });
-      console.log('[EZTV-DEBUG] TMDB result:', tmdb ? 'OK' : 'NULL', tmdb?.name);
-
-      const rawImdbId = tmdb?.external_ids?.imdb_id || tmdb?.imdb_id || '';
-      const title = tmdb?.name || tmdb?.original_name || 'Unknown';
-      const imdbId = normalizeImdbId(rawImdbId);
-      console.log('[EZTV-DEBUG] IMDb ID:', rawImdbId, '→', imdbId);
-
-      if (!imdbId) {
-        console.log('[EZTV-DEBUG] No IMDb ID, returning empty');
-        return [];
-      }
-
-      // 2. EZTV API — gamit ang imdb_id
-      const url = EZTV_API + '?imdb_id=' + imdbId + '&limit=100';
-      console.log('[EZTV-DEBUG] EZTV URL:', url);
-      const data = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch((e) => { console.log('[EZTV-DEBUG] EZTV fetch error:', e); return null; });
-      console.log('[EZTV-DEBUG] EZTV torrents count:', data?.torrents?.length || 0);
-
-      if (!data?.torrents || !Array.isArray(data.torrents)) {
-        console.log('[EZTV-DEBUG] No torrents array');
-        return [];
-      }
-
-      // 3. Filter: 1080p + season + episode
-      const seasonStr = String(seasonNum);
-      const episodeStr = String(episodeNum);
-      console.log('[EZTV-DEBUG] Filtering for S' + seasonStr + 'E' + episodeStr);
-
-      const results = [];
-
-      for (const t of data.torrents) {
-        if (!t || !t.hash || !t.filename) continue;
-        if (!/\b1080p\b/i.test(t.filename)) continue;
-        if (String(t.season) !== seasonStr) continue;
-        if (String(t.episode) !== episodeStr) continue;
-
-        console.log('[EZTV-DEBUG] Match found:', t.filename);
-
-        const seeds = parseInt(t.seeds) || 0;
-        const peers = parseInt(t.peers) || 0;
-        const sizeBytes = parseInt(t.size_bytes) || 0;
-        const sizeGB = (sizeBytes / 1073741824).toFixed(2);
-        const magnet = t.magnet_url || buildMagnet(t.hash, t.filename);
-
-        const extras = [];
-        if (/\bX265\b|\bH\.?265\b|\bHEVC\b/i.test(t.filename)) extras.push('X265');
-        else if (/\bX264\b|\bH\.?264\b|\bAVC\b/i.test(t.filename)) extras.push('X264');
-        if (/\bHDR10\+?\b/i.test(t.filename)) extras.push('HDR10');
-        else if (/\bHDR\b/i.test(t.filename)) extras.push('HDR');
-        if (/\bATMOS\b/i.test(t.filename)) extras.push('ATMOS');
-        if (/\bDTS\b/i.test(t.filename)) extras.push('DTS');
-        if (/\b5\.1\b/i.test(t.filename)) extras.push('5.1');
-
-        const titleLine = '\uD83C\uDFA6 ' + title + ' S' + String(seasonNum).padStart(2, '0') + ' E' + String(episodeNum).padStart(2, '0');
-        const qualityLine = '\uD83D\uDD25 ' + QUALITY_LABEL + (extras.length ? ' | ' + extras.join(' | ') : '');
-        const statsLine = '\uD83C\uDF31 ' + seeds + ' | \uD83D\uDCBE ' + sizeGB + ' GB | \uD83D\uDD17 EZTV';
-        const description = titleLine + '\n' + qualityLine + '\n' + statsLine;
-
-        results.push({
-          seeders: seeds,
-          peers,
-          sizeBytes,
-          qualityRank: QUALITY_RANK,
-          data: {
-            name: 'EZTV | ' + QUALITY_LABEL.toUpperCase() + ' | \uD83C\uDF31 ' + seeds,
-            title: description,
-            size: description,
-            description,
-            url: magnet
-          }
-        });
-      }
-
-      console.log('[EZTV-DEBUG] Total results:', results.length);
-      if (!results.length) return [];
-
-      // 4. Sort
-      results.sort((a, b) => {
-        if (settings.sortBy === 'size') return b.sizeBytes - a.sizeBytes;
-        if (settings.sortBy === 'quality') {
-          if (b.qualityRank !== a.qualityRank) return b.qualityRank - a.qualityRank;
-          return b.seeders - a.seeders;
-        }
-        return b.seeders - a.seeders;
-      });
-
-      // 5. Apply inverted sort tag
-      return results.map(r => {
-        let sortTag;
-        if (settings.sortBy === 'size') sortTag = getInvertedSortTag(Math.floor(r.sizeBytes / 1073741824));
-        else if (settings.sortBy === 'quality') sortTag = getInvertedSortTag(r.qualityRank * 10000 + r.seeders);
-        else sortTag = getInvertedSortTag(r.seeders);
-        return { ...r.data, name: sortTag + r.data.name };
-      });
-
-    } catch (err) {
-      console.error('[EZTV-DEBUG] Fatal error:', err);
-      return [];
+      const tmdbRes = await fetch(tmdbUrl);
+      const tmdb = await tmdbRes.json();
+      title = tmdb?.name || 'Unknown';
+      imdbId = normalizeImdbId(tmdb?.external_ids?.imdb_id || '');
+      tmdbInfo = 'TMDB: ' + title + ' | IMDb: ' + (imdbId || 'NONE');
+    } catch (e) {
+      tmdbInfo = 'TMDB ERROR: ' + (e?.message || String(e));
     }
+
+    if (!imdbId) {
+      return [{
+        name: 'TEST | No IMDb',
+        title: tmdbInfo + '\n' + envInfo,
+        url: 'magnet:?xt=urn:btih:0000000000000000000000000000000000000000'
+      }];
+    }
+
+    // === TEST 2: EZTV ===
+    let eztvInfo = 'EZTV: not called';
+    let torrentCount = 0;
+    let matchCount = 0;
+
+    try {
+      const eztvUrl = EZTV_API + '?imdb_id=' + imdbId + '&limit=100';
+      const eztvRes = await fetch(eztvUrl, { headers: HEADERS });
+      const eztvData = await eztvRes.json();
+      torrentCount = eztvData?.torrents?.length || 0;
+
+      // Bilangin ang 1080p matches para sa target season/episode
+      const seasonStr = String(parseInt(season) || 1);
+      const episodeStr = String(parseInt(episode) || 1);
+      if (Array.isArray(eztvData?.torrents)) {
+        for (const t of eztvData.torrents) {
+          if (!t?.filename) continue;
+          if (!/\b1080p\b/i.test(t.filename)) continue;
+          if (String(t.season) !== seasonStr) continue;
+          if (String(t.episode) !== episodeStr) continue;
+          matchCount++;
+        }
+      }
+      eztvInfo = 'EZTV: ' + torrentCount + ' total | ' + matchCount + ' matched S' + seasonStr + 'E' + episodeStr;
+    } catch (e) {
+      eztvInfo = 'EZTV ERROR: ' + (e?.message || String(e));
+    }
+
+    // === TEST 3: RETURN TEST STREAM ===
+    return [{
+      name: 'TEST | EZTV | 1080p',
+      title: tmdbInfo + '\n' + eztvInfo + '\n' + envInfo,
+      url: 'magnet:?xt=urn:btih:0000000000000000000000000000000000000000'
+    }];
+
   })();
 }
 
@@ -196,75 +154,7 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 function onSettings() {
   return (async function () {
     return [
-      { type: 'header', label: 'EZTV — TV Series Only' },
-      {
-        type: 'select',
-        key: 'debridProvider',
-        label: 'Debrid provider',
-        options: [
-          { label: 'None', value: 'none' },
-          { label: 'TorBox — recommended', value: 'torbox' },
-          { label: 'Torrin', value: 'torrin' },
-          { label: 'AllDebrid', value: 'alldebrid' },
-          { label: 'Premiumize', value: 'premiumize' },
-          { label: 'RealDebrid', value: 'realdebrid' }
-        ],
-        default: 'none'
-      },
-      {
-        type: 'password',
-        isPassword: true,
-        key: 'debridKey',
-        label: 'Debrid API key',
-        placeholder: 'Paste your provider API key',
-        description: 'Free. Your key is encrypted on server — it never travels in clear.'
-      },
-      { type: 'header', label: 'Basics' },
-      {
-        type: 'select',
-        key: 'language',
-        label: 'Preferred Language',
-        description: 'Streams in your language appear first with \u2B50\uFE0F',
-        options: [
-          { label: 'Any', value: 'any' },
-          { label: '\uD83C\uDDEC\uD83C\uDDE7 English', value: 'en' },
-          { label: '\uD83C\uDDFA\uD83C\uDDF8 English (US)', value: 'en-us' },
-          { label: '\uD83C\uDDEC\uD83C\uDDE7 English (UK)', value: 'en-uk' },
-          { label: '\uD83C\uDDEA\uD83C\uDDF8 Español', value: 'es' },
-          { label: '\uD83C\uDDEA\uD83C\uDDF8 Español (España)', value: 'es-es' },
-          { label: '\uD83C\uDDEA\uD83C\uDDF8 Español (LatAm)', value: 'es-la' },
-          { label: '\uD83C\uDDEB\uD83C\uDDF7 Français', value: 'fr' },
-          { label: '\uD83C\uDDEB\uD83C\uDDF7 Français (France)', value: 'fr-fr' },
-          { label: '\uD83C\uDDEB\uD83C\uDDF7 Français (Canada)', value: 'fr-ca' },
-          { label: '\uD83C\uDDF5\uD83C\uDDF9 Português', value: 'pt' },
-          { label: '\uD83C\uDDE7\uD83C\uDDF7 Português (Brasil)', value: 'pt-br' },
-          { label: '\uD83C\uDDF5\uD83C\uDDF9 Português (Portugal)', value: 'pt-pt' },
-          { label: '\uD83C\uDDE9\uD83C\uDDEA Deutsch', value: 'de' },
-          { label: '\uD83C\uDDEE\uD83C\uDDF9 Italiano', value: 'it' },
-          { label: '\uD83C\uDDF7\uD83C\uDDFA Русский', value: 'ru' },
-          { label: '\uD83C\uDDEF\uD83C\uDDF5 日本語', value: 'ja' },
-          { label: '\uD83C\uDDF0\uD83C\uDDF7 한국어', value: 'ko' },
-          { label: '\uD83C\uDDE8\uD83C\uDDF3 中文', value: 'zh' },
-          { label: '\uD83C\uDDF8\uD83C\uDDE6 العربية', value: 'ar' },
-          { label: '\uD83C\uDDEE\uD83C\uDDF3 हिन्दी', value: 'hi' },
-          { label: '\uD83C\uDDF3\uD83C\uDDF1 Nederlands', value: 'nl' },
-          { label: '\uD83C\uDDF5\uD83C\uDDF1 Polski', value: 'pl' },
-          { label: '\uD83C\uDDF9\uD83C\uDDF7 Türkçe', value: 'tr' },
-          { label: '\uD83C\uDDF8\uD83C\uDDEA Svenska', value: 'sv' }
-        ],
-        default: 'any'
-      },
-      {
-        type: 'select',
-        key: 'sortBy',
-        label: 'Sort results by',
-        options: [
-          { label: 'Seeders', value: 'seeders' },
-          { label: 'Quality', value: 'quality' },
-          { label: 'Size', value: 'size' }
-        ],
-        default: 'seeders'
-      }
+      { type: 'header', label: 'EZTV — TV Series Only (TEST)' }
     ];
   })();
 }
