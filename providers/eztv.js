@@ -2,7 +2,7 @@
 
 // ============ CONFIG ============
 const TMDB_API_KEY = '1865f43a0549ca50d341dd9ab8b29f49';
-const EZTV_API = 'https://eztv.re/api/get-torrents';
+const EZTV_API = 'https://eztvx.to/api/get-torrents';
 const DEFAULT_PROVIDER = 'EZTV';
 
 const HEADERS = {
@@ -74,7 +74,6 @@ function normalizeImdbId(imdbId) {
 // ============ MAIN: getStreams ============
 function getStreams(mediaId, mediaType = 'movie', season = null, episode = null, userSettings = null) {
   return (async function () {
-    // === TV SERIES ONLY ===
     if (mediaType !== 'tv' && mediaType !== 'series') {
       return [];
     }
@@ -93,13 +92,13 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 
       if (!imdbId) return [];
 
-      // 2. EZTV API call — walang IMDb filter sa endpoint, kaya kailangan i-filter manually
-      const url = EZTV_API + '?limit=100&page=1';
+      // 2. EZTV API call — gamit ang imdb_id (walang tt prefix, walang padding)
+      const url = EZTV_API + '?imdb_id=' + imdbId + '&limit=100';
       const data = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch(() => null);
 
       if (!data?.torrents || !Array.isArray(data.torrents)) return [];
 
-      // 3. Filter: IMDb ID + 1080p + season + episode
+      // 3. Filter: 1080p + tamang season + tamang episode
       const seasonStr = String(seasonNum);
       const episodeStr = String(episodeNum);
 
@@ -107,10 +106,6 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 
       for (const t of data.torrents) {
         if (!t || !t.hash || !t.filename) continue;
-
-        // IMDb ID filter — normalize din ang t.imdb_id
-        const torrentImdb = normalizeImdbId(t.imdb_id);
-        if (torrentImdb !== imdbId) continue;
 
         // 1080p filter (strict)
         if (!/\b1080p\b/i.test(t.filename)) continue;
@@ -125,7 +120,6 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
         const sizeGB = (sizeBytes / 1073741824).toFixed(2);
         const magnet = t.magnet_url || buildMagnet(t.hash, t.filename);
 
-        // Codec/audio detection mula sa filename
         const extras = [];
         if (/\bX265\b|\bH\.?265\b|\bHEVC\b/i.test(t.filename)) extras.push('X265');
         else if (/\bX264\b|\bH\.?264\b|\bAVC\b/i.test(t.filename)) extras.push('X264');
