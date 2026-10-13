@@ -2,7 +2,7 @@
 
 // ============ CONFIG ============
 const TMDB_API_KEY = '1865f43a0549ca50d341dd9ab8b29f49';
-const YTS_API_BASE = 'https://yts.gg/api/v2/';
+const YTS_API_BASE = 'https://movies-api.accel.li/api/v2';
 const DEFAULT_PROVIDER = 'YTS';
 
 const KNOWN_PROVIDERS = ['YTS','EZTV','RARBG','Torrentio','Bitmagnet','Prowlarr','1337x','ThePirateBay','KickassTorrents','Torlock','Zooqle','Torrentz2','BitSearch','LimeTorrents'];
