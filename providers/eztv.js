@@ -74,7 +74,10 @@ function normalizeImdbId(imdbId) {
 // ============ MAIN: getStreams ============
 function getStreams(mediaId, mediaType = 'movie', season = null, episode = null, userSettings = null) {
   return (async function () {
+    console.log('[EZTV-DEBUG] Start:', JSON.stringify({ mediaId, mediaType, season, episode }));
+
     if (mediaType !== 'tv' && mediaType !== 'series') {
+      console.log('[EZTV-DEBUG] Not TV, returning empty');
       return [];
     }
 
@@ -85,34 +88,45 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
     try {
       // 1. TMDB → IMDb ID + title
       const tmdbUrl = 'https://api.themoviedb.org/3/tv/' + mediaId + '?api_key=' + TMDB_API_KEY + '&append_to_response=external_ids';
-      const tmdb = await fetch(tmdbUrl).then(r => r.json()).catch(() => null);
+      console.log('[EZTV-DEBUG] TMDB URL:', tmdbUrl);
+      const tmdb = await fetch(tmdbUrl).then(r => r.json()).catch((e) => { console.log('[EZTV-DEBUG] TMDB fetch error:', e); return null; });
+      console.log('[EZTV-DEBUG] TMDB result:', tmdb ? 'OK' : 'NULL', tmdb?.name);
+
       const rawImdbId = tmdb?.external_ids?.imdb_id || tmdb?.imdb_id || '';
       const title = tmdb?.name || tmdb?.original_name || 'Unknown';
       const imdbId = normalizeImdbId(rawImdbId);
+      console.log('[EZTV-DEBUG] IMDb ID:', rawImdbId, '→', imdbId);
 
-      if (!imdbId) return [];
+      if (!imdbId) {
+        console.log('[EZTV-DEBUG] No IMDb ID, returning empty');
+        return [];
+      }
 
-      // 2. EZTV API call — gamit ang imdb_id (walang tt prefix, walang padding)
+      // 2. EZTV API — gamit ang imdb_id
       const url = EZTV_API + '?imdb_id=' + imdbId + '&limit=100';
-      const data = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch(() => null);
+      console.log('[EZTV-DEBUG] EZTV URL:', url);
+      const data = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch((e) => { console.log('[EZTV-DEBUG] EZTV fetch error:', e); return null; });
+      console.log('[EZTV-DEBUG] EZTV torrents count:', data?.torrents?.length || 0);
 
-      if (!data?.torrents || !Array.isArray(data.torrents)) return [];
+      if (!data?.torrents || !Array.isArray(data.torrents)) {
+        console.log('[EZTV-DEBUG] No torrents array');
+        return [];
+      }
 
-      // 3. Filter: 1080p + tamang season + tamang episode
+      // 3. Filter: 1080p + season + episode
       const seasonStr = String(seasonNum);
       const episodeStr = String(episodeNum);
+      console.log('[EZTV-DEBUG] Filtering for S' + seasonStr + 'E' + episodeStr);
 
       const results = [];
 
       for (const t of data.torrents) {
         if (!t || !t.hash || !t.filename) continue;
-
-        // 1080p filter (strict)
         if (!/\b1080p\b/i.test(t.filename)) continue;
-
-        // Season + Episode filter (strict)
         if (String(t.season) !== seasonStr) continue;
         if (String(t.episode) !== episodeStr) continue;
+
+        console.log('[EZTV-DEBUG] Match found:', t.filename);
 
         const seeds = parseInt(t.seeds) || 0;
         const peers = parseInt(t.peers) || 0;
@@ -149,6 +163,7 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
         });
       }
 
+      console.log('[EZTV-DEBUG] Total results:', results.length);
       if (!results.length) return [];
 
       // 4. Sort
@@ -167,14 +182,11 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
         if (settings.sortBy === 'size') sortTag = getInvertedSortTag(Math.floor(r.sizeBytes / 1073741824));
         else if (settings.sortBy === 'quality') sortTag = getInvertedSortTag(r.qualityRank * 10000 + r.seeders);
         else sortTag = getInvertedSortTag(r.seeders);
-        return {
-          ...r.data,
-          name: sortTag + r.data.name
-        };
+        return { ...r.data, name: sortTag + r.data.name };
       });
 
     } catch (err) {
-      console.error('[' + DEFAULT_PROVIDER + '] Execution error:', err);
+      console.error('[EZTV-DEBUG] Fatal error:', err);
       return [];
     }
   })();
