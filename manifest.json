@@ -3,13 +3,13 @@
   "version": "1.0.0",
   "scrapers": [
     {
-      "id": "yts_1080p",
-      "name": "YTS 1080p",
+      "id": "yts",
+      "name": "YTS",
       "description": "1080p torrent magnet links",
       "version": "1.0.0",
       "author": "Nuvio Team",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/yts_1080p.js",
+      "filename": "providers/yts.js",
       "enabled": true,
       "hasSettings": true,
       "logo": "https://em-content.zobj.net/source/apple/391/eagle_1f985.png",
@@ -18,13 +18,13 @@
       "supportsExternalPlayer": true 
     },
     {
-      "id": "EZTV_1080p",
-      "name": "EZTV 1080p",
+      "id": "eztv",
+      "name": "EZTV",
       "description": "1080p torrent magnet links",
       "version": "1.0.0",
       "author": "Nuvio Team",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/EZTV_1080p.js",
+      "filename": "providers/eztv.js",
       "enabled": true,
       "hasSettings": true,
       "logo": "https://em-content.zobj.net/source/apple/391/eagle_1f985.png",
