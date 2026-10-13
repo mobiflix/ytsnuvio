@@ -65,11 +65,10 @@ function getInvertedSortTag(num, max) {
   return bin.split('').map(b => b === '1' ? '\uFEFF' : '\u200B').join('');
 }
 
-// I-pad ang IMDb ID sa 7 digits (kailangan ng EZTV API)
-function padImdbId(imdbId) {
+// I-strip ang "tt" prefix at gawing raw digits (walang padding)
+function normalizeImdbId(imdbId) {
   if (!imdbId) return '';
-  const digits = String(imdbId).replace(/^tt/i, '').replace(/\D/g, '');
-  return digits.padStart(7, '0');
+  return String(imdbId).replace(/^tt/i, '').replace(/\D/g, '');
 }
 
 // ============ MAIN: getStreams ============
@@ -90,17 +89,17 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
       const tmdb = await fetch(tmdbUrl).then(r => r.json()).catch(() => null);
       const rawImdbId = tmdb?.external_ids?.imdb_id || tmdb?.imdb_id || '';
       const title = tmdb?.name || tmdb?.original_name || 'Unknown';
-      const imdbId = padImdbId(rawImdbId);
+      const imdbId = normalizeImdbId(rawImdbId);
 
       if (!imdbId) return [];
 
-      // 2. EZTV API call — gamit ang IMDb ID
-      const url = EZTV_API + '?limit=100&imdb_id=' + imdbId;
+      // 2. EZTV API call — walang IMDb filter sa endpoint, kaya kailangan i-filter manually
+      const url = EZTV_API + '?limit=100&page=1';
       const data = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch(() => null);
 
       if (!data?.torrents || !Array.isArray(data.torrents)) return [];
 
-      // 3. Filter: 1080p + tamang season + tamang episode
+      // 3. Filter: IMDb ID + 1080p + season + episode
       const seasonStr = String(seasonNum);
       const episodeStr = String(episodeNum);
 
@@ -108,6 +107,10 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 
       for (const t of data.torrents) {
         if (!t || !t.hash || !t.filename) continue;
+
+        // IMDb ID filter — normalize din ang t.imdb_id
+        const torrentImdb = normalizeImdbId(t.imdb_id);
+        if (torrentImdb !== imdbId) continue;
 
         // 1080p filter (strict)
         if (!/\b1080p\b/i.test(t.filename)) continue;
