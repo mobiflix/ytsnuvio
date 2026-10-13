@@ -67,8 +67,8 @@ function normalizeImdbId(imdbId) {
 function normalizeTitle(title) {
   if (!title) return '';
   return String(title)
-    .replace(/[^\w\s]/g, ' ')    // alisin ang special characters
-    .replace(/\s+/g, ' ')         // i-collapse ang spaces
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
 }
@@ -84,11 +84,11 @@ function buildSePatterns(season, episode) {
   const sPad = s.padStart(2, '0');
   const ePad = e.padStart(2, '0');
   return [
-    new RegExp('S' + sPad + '[\\s._-]?E' + ePad, 'i'),      // S01E01, S01.E01, S01-E01, S01 E01
-    new RegExp('\\b' + s + 'x' + ePad + '\\b', 'i'),         // 1x01
-    new RegExp('Season[\\s._-]?' + s + '[\\s._-]?Episode[\\s._-]?' + e, 'i'), // Season 1 Episode 1
-    new RegExp('S' + sPad + '[\\s._-]?' + ePad, 'i'),       // S01.01, S01-01
-    new RegExp('\\b' + sPad + ePad + '\\b', 'i')             // 0101
+    new RegExp('S' + sPad + '[\\s._-]?E' + ePad, 'i'),
+    new RegExp('\\b' + s + 'x' + ePad + '\\b', 'i'),
+    new RegExp('Season[\\s._-]?' + s + '[\\s._-]?Episode[\\s._-]?' + e, 'i'),
+    new RegExp('S' + sPad + '[\\s._-]?' + ePad, 'i'),
+    new RegExp('\\b' + sPad + ePad + '\\b', 'i')
   ];
 }
 
@@ -119,10 +119,7 @@ async function fetchEztv(imdbId, title, season, episode, settings) {
       if (String(t.season) !== String(season) || String(t.episode) !== String(episode)) continue;
 
       const q = detectQuality(t.filename);
-      // Quality filter: 1080p priority, 720p fallback
       if (q.rank < FALLBACK_QUALITY_RANK) continue;
-
-      // Kung fallback lang, tanggapin lang kung may allowFallback
       if (q.rank < QUALITY_RANK && !settings.allowFallback) continue;
 
       out.push({
@@ -170,13 +167,11 @@ async function fetchTpb(title, season, episode, settings) {
     }
 
     const out = [];
-    const normTitle = normalizeTitle(title);
     const tWords = titleWords(title);
 
     for (const t of all) {
       if (!matchesSe(t.name, season, episode)) continue;
 
-      // Title match — dapat may 50% ng title words
       const nameNorm = normalizeTitle(t.name);
       const matched = tWords.filter(w => nameNorm.includes(w));
       if (matched.length < Math.max(1, Math.floor(tWords.length * 0.5))) continue;
@@ -204,10 +199,9 @@ async function fetchTpb(title, season, episode, settings) {
   }
 }
 
-// ============ SOURCE 3: 1337x (via apibay alt category) ============
+// ============ SOURCE 3: 1337x (via apibay alt queries) ============
 async function fetch1337x(title, season, episode, settings) {
   try {
-    // 1337x ay walang public JSON API — gamitin ang generic TPB query na may mas malawak na category
     const queries = [
       title + ' S' + String(season).padStart(2, '0') + 'E' + String(episode).padStart(2, '0') + ' 1080p',
       title + ' S' + String(season).padStart(2, '0') + 'E' + String(episode).padStart(2, '0') + ' x265'
@@ -216,7 +210,6 @@ async function fetch1337x(title, season, episode, settings) {
     const all = [];
     for (const q of queries) {
       try {
-        // cat=0 = all categories (mas malawak)
         const url = 'https://apibay.org/q.php?q=' + encodeURIComponent(q) + '&cat=0';
         const arr = await fetch(url, { headers: HEADERS }).then(r => r.json()).catch(() => null);
         if (Array.isArray(arr)) {
@@ -401,24 +394,20 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
         };
       });
 
-      // 5. Sort — 1080p muna, tapos seeders
+      // ============ SORTING — SEEDERS PRIORITY ============
       results.sort((a, b) => {
-        if (settings.sortBy === 'size') return b.sizeBytes - a.sizeBytes;
-        if (settings.sortBy === 'quality') {
-          if (b.qualityRank !== a.qualityRank) return b.qualityRank - a.qualityRank;
-          return b.seeders - a.seeders;
-        }
-        // Default: quality rank muna, tapos seeders
+        // Primary: Seeders (mas mataas, mas mauna)
+        if (b.seeders !== a.seeders) return b.seeders - a.seeders;
+        // Secondary: Quality rank (tiebreaker)
         if (b.qualityRank !== a.qualityRank) return b.qualityRank - a.qualityRank;
-        return b.seeders - a.seeders;
+        // Tertiary: Size (mas maliit, mas mauna — para sa mas mabilis na download)
+        return a.sizeBytes - b.sizeBytes;
       });
 
-      // 6. Apply inverted sort tag
+      // 6. Apply inverted sort tag — seeders priority
       return results.map(r => {
-        let sortTag;
-        if (settings.sortBy === 'size') sortTag = getInvertedSortTag(Math.floor(r.sizeBytes / 1073741824));
-        else if (settings.sortBy === 'quality') sortTag = getInvertedSortTag(r.qualityRank * 10000 + r.seeders);
-        else sortTag = getInvertedSortTag(r.seeders);
+        // Seeders priority: mas mataas na seeders = mas maliit na inverted value = mas mauna
+        const sortTag = getInvertedSortTag(r.seeders);
         return { ...r.data, name: sortTag + r.data.name };
       });
 
@@ -433,17 +422,17 @@ function getStreams(mediaId, mediaType = 'movie', season = null, episode = null,
 function onSettings() {
   return (async function () {
     return [
-      { type: 'header', label: 'Multi-Source TV — EZTV + TPB + 1337x + BitSearch' },
+      { type: 'header', label: 'Multi-Source TV — Seeders Priority' },
       {
         type: 'select',
         key: 'sortBy',
         label: 'Sort results by',
         options: [
-          { label: 'Quality + Seeders', value: 'quality' },
-          { label: 'Seeders', value: 'seeders' },
+          { label: 'Seeders (recommended)', value: 'seeders' },
+          { label: 'Quality', value: 'quality' },
           { label: 'Size', value: 'size' }
         ],
-        default: 'quality'
+        default: 'seeders'
       },
       {
         type: 'select',
